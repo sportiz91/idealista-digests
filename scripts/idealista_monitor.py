@@ -89,29 +89,47 @@ def filter_private(items):
 
 
 # ---------------------------------------------------------------------------
-# Dedup state (local JSON committed to repo as fallback to Apify monitoringMode)
+# State: dedup + daily status counters (committed to repo)
 # ---------------------------------------------------------------------------
-def load_seen_ids():
+def _empty_state():
+    return {
+        "seen_ids": [],
+        "count": 0,
+        "updated_at": None,
+        "last_daily_status_date": None,
+        "new_count_today": 0,
+        "new_count_yesterday": 0,
+    }
+
+
+def load_state():
+    """Load state dict. Returns (state, bootstrap_bool).
+
+    bootstrap_bool is True only when the state file does not exist yet,
+    i.e. the very first run of the monitor. It's used to suppress the
+    spam of 10-20 initial listings that are already old by the time we
+    start tracking.
+    """
     if not os.path.exists(STATE_FILE):
-        return set(), True  # bootstrap = True
+        return _empty_state(), True
     try:
         with open(STATE_FILE) as f:
             data = json.load(f)
-        return set(data.get("seen_ids", [])), False
+        merged = _empty_state()
+        merged.update(data)
+        return merged, False
     except (json.JSONDecodeError, KeyError):
         print(f"  Corrupt state file {STATE_FILE}, starting fresh")
-        return set(), True
+        return _empty_state(), True
 
 
-def save_seen_ids(seen):
+def save_state(state):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    payload = {
-        "seen_ids": sorted(seen),
-        "count": len(seen),
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
+    state["seen_ids"] = sorted(set(str(x) for x in state.get("seen_ids", [])))
+    state["count"] = len(state["seen_ids"])
+    state["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     with open(STATE_FILE, "w") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(state, f, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +301,41 @@ def send_telegram_text(text):
 
 
 # ---------------------------------------------------------------------------
+# Daily status — once per day, heartbeat message to confirm the cron is alive
+# ---------------------------------------------------------------------------
+# Fires on the first run with UTC hour >= DAILY_STATUS_MIN_HOUR whose calendar
+# day differs from state.last_daily_status_date. If the 9 UTC run fails, the
+# 10 UTC run picks it up, etc.
+DAILY_STATUS_MIN_HOUR = 9  # 11:13 Madrid CEST / 10:13 CET
+
+
+def should_send_daily_status(state):
+    current_hour_utc = time.gmtime().tm_hour
+    today_utc = time.strftime("%Y-%m-%d", time.gmtime())
+    if current_hour_utc < DAILY_STATUS_MIN_HOUR:
+        return False
+    if state.get("last_daily_status_date") == today_utc:
+        return False
+    return True
+
+
+def build_daily_status(total_scraped, privates_count, ratio_pct, lifetime_tracked, new_yesterday):
+    today = time.strftime("%d/%m/%Y", time.gmtime())
+    now = time.strftime("%H:%M", time.gmtime())
+    current_hour_utc = time.gmtime().tm_hour
+    next_hour = (current_hour_utc + 1) % 24
+    return (
+        f"🏠 <b>Idealista Daily Status — {today}</b>\n\n"
+        f"✅ Cron alive\n"
+        f"📊 Última corrida: {now} UTC\n"
+        f"🔍 Scrapeados: {total_scraped} · Particulares: {privates_count} ({ratio_pct}%)\n"
+        f"📦 Lifetime tracked: {lifetime_tracked} listings\n"
+        f"🆕 Ayer: {new_yesterday} pisos nuevos notificados\n"
+        f"⏰ Próximo run: {next_hour:02d}:13 UTC"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
@@ -290,30 +343,62 @@ def main():
 
     total = len(items)
     privates = filter_private(items)
-    print(f"\nStats: {total} total · {len(privates)} private ({len(privates)*100//max(total,1)}%)")
+    ratio = len(privates) * 100 // max(total, 1)
+    print(f"\nStats: {total} total · {len(privates)} private ({ratio}%)")
 
-    seen, bootstrap = load_seen_ids()
+    state, bootstrap = load_state()
+    seen = set(state["seen_ids"])
     new_listings = [
         item for item in privates if str(item.get("adid")) not in seen
     ]
     print(f"  Seen IDs on file: {len(seen)} · New private listings: {len(new_listings)}")
+
+    today_utc = time.strftime("%Y-%m-%d", time.gmtime())
 
     if bootstrap:
         print("\n[bootstrap] First run — recording seen IDs without sending individual listings.")
         summary = (
             f"🤖 <b>Idealista monitor initialized</b>\n"
             f"Tracking {len(privates)} current private listings.\n"
-            f"Next runs will only notify you about NEW ones."
+            f"Next runs will only notify you about NEW ones.\n"
+            f"You will receive a daily status each morning (~11:13 Madrid time)."
         )
         send_telegram_text(summary)
         for item in privates:
             seen.add(str(item.get("adid")))
-        save_seen_ids(seen)
+        state["seen_ids"] = list(seen)
+        state["last_daily_status_date"] = today_utc
+        state["new_count_today"] = 0
+        state["new_count_yesterday"] = 0
+        save_state(state)
         print("Done (bootstrap).")
         return
 
+    # Daily status check — before processing new listings, so the "Ayer" count
+    # reflects the old state.new_count_today (yesterday's work) BEFORE rollover.
+    if should_send_daily_status(state):
+        print("\n[daily status] First run of the day past 9 UTC — sending heartbeat.")
+        yesterday_count = state.get("new_count_today", 0)
+        status_msg = build_daily_status(
+            total_scraped=total,
+            privates_count=len(privates),
+            ratio_pct=ratio,
+            lifetime_tracked=len(seen),
+            new_yesterday=yesterday_count,
+        )
+        ok = send_telegram_text(status_msg)
+        if ok:
+            state["new_count_yesterday"] = yesterday_count
+            state["new_count_today"] = 0
+            state["last_daily_status_date"] = today_utc
+        else:
+            print("  WARN: daily status send failed — will retry next run.")
+
     if not new_listings:
-        print("\nNo new private listings. Exiting.")
+        print("\nNo new private listings to notify.")
+        # Still persist state (daily status rollover + updated_at)
+        state["seen_ids"] = list(seen)
+        save_state(state)
         return
 
     print(f"\nSending {len(new_listings)} new listings to Telegram...")
@@ -329,8 +414,10 @@ def main():
             print(f"  Skipping state update for adid={item.get('adid')} due to send failure")
         time.sleep(0.4)  # soft rate limit
 
-    save_seen_ids(seen)
-    print(f"\nDone. Sent {sent}/{len(new_listings)} listings.")
+    state["seen_ids"] = list(seen)
+    state["new_count_today"] = state.get("new_count_today", 0) + sent
+    save_state(state)
+    print(f"\nDone. Sent {sent}/{len(new_listings)} listings (today total: {state['new_count_today']}).")
 
 
 if __name__ == "__main__":
