@@ -303,27 +303,21 @@ def send_telegram_text(text):
 # ---------------------------------------------------------------------------
 # Daily status — once per day, heartbeat message to confirm the cron is alive
 # ---------------------------------------------------------------------------
-# Fires on the first run with UTC hour >= DAILY_STATUS_MIN_HOUR whose calendar
-# day differs from state.last_daily_status_date. If the 9 UTC run fails, the
-# 10 UTC run picks it up, etc.
-DAILY_STATUS_MIN_HOUR = 9  # 11:13 Madrid CEST / 10:13 CET
+# Fires on the first run of each UTC day (unless one has already been sent
+# today). At daily cadence every run is this "first run of the day", so the
+# status fires on every scheduled invocation; if the cron is ever bumped back
+# to hourly, this still guarantees exactly one per day.
+NEXT_RUN_DESCRIPTION = "mañana ~12:07 Madrid"
 
 
 def should_send_daily_status(state):
-    current_hour_utc = time.gmtime().tm_hour
     today_utc = time.strftime("%Y-%m-%d", time.gmtime())
-    if current_hour_utc < DAILY_STATUS_MIN_HOUR:
-        return False
-    if state.get("last_daily_status_date") == today_utc:
-        return False
-    return True
+    return state.get("last_daily_status_date") != today_utc
 
 
 def build_daily_status(total_scraped, privates_count, ratio_pct, lifetime_tracked, new_yesterday):
     today = time.strftime("%d/%m/%Y", time.gmtime())
     now = time.strftime("%H:%M", time.gmtime())
-    current_hour_utc = time.gmtime().tm_hour
-    next_hour = (current_hour_utc + 1) % 24
     return (
         f"🏠 <b>Idealista Daily Status — {today}</b>\n\n"
         f"✅ Cron alive\n"
@@ -331,7 +325,7 @@ def build_daily_status(total_scraped, privates_count, ratio_pct, lifetime_tracke
         f"🔍 Scrapeados: {total_scraped} · Particulares: {privates_count} ({ratio_pct}%)\n"
         f"📦 Lifetime tracked: {lifetime_tracked} listings\n"
         f"🆕 Ayer: {new_yesterday} pisos nuevos notificados\n"
-        f"⏰ Próximo run: {next_hour:02d}:13 UTC"
+        f"⏰ Próximo run: {NEXT_RUN_DESCRIPTION}"
     )
 
 

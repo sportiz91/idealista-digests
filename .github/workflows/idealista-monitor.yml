@@ -2,8 +2,11 @@ name: Idealista Private Monitor
 
 on:
   schedule:
-    # Every hour at :13 (offset from :00 to avoid GitHub cron congestion)
-    - cron: '13 * * * *'
+    # Once a day at 10:07 UTC. That is ~12:07 Madrid in summer (CEST) and
+    # ~11:07 Madrid in winter (CET). Daily cadence keeps Apify usage within
+    # the $5 free tier (~$3.81/mo at 1 run/day × ~120 items × $0.001/item).
+    # The :07 minute offset avoids GitHub Actions cron congestion at :00.
+    - cron: '7 10 * * *'
   workflow_dispatch: # Manual trigger for testing
 
 permissions:
