@@ -1,0 +1,46 @@
+name: Idealista Private Monitor
+
+on:
+  schedule:
+    # Every hour at :13 (offset from :00 to avoid GitHub cron congestion)
+    - cron: '13 * * * *'
+  workflow_dispatch: # Manual trigger for testing
+
+permissions:
+  contents: write # Needed to commit state/seen_ids.json back to repo
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    # Prevent concurrent runs so state file doesn't collide
+    concurrency:
+      group: idealista-monitor
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Idealista monitor
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SEARCH_URL: ${{ secrets.SEARCH_URL }}
+          MAX_ITEMS: '50'
+          MONITORING_MODE: 'true'
+        run: python scripts/idealista_monitor.py
+
+      - name: Commit state file if changed
+        run: |
+          if [[ -n "$(git status --porcelain state/)" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state/
+            git commit -m "state: update seen_ids [skip ci]"
+            git push
+          else
+            echo "No state changes to commit."
+          fi
