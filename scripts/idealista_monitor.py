@@ -43,9 +43,13 @@ def run_apify_actor():
         print("ERROR: SEARCH_URL not set", file=sys.stderr)
         sys.exit(1)
 
+    # &timeout=900 extends Apify's sync endpoint wait from its 5min default
+    # to 15 minutes (max allowed is the actor's own timeout, 3600s here).
+    # Without this, slow cold starts + DataDome + residential proxies can
+    # push the actor run over 5min and Apify drops the connection.
     url = (
         f"https://api.apify.com/v2/acts/{APIFY_ACTOR_ID}"
-        f"/run-sync-get-dataset-items?token={APIFY_TOKEN}"
+        f"/run-sync-get-dataset-items?token={APIFY_TOKEN}&timeout=900"
     )
     payload = {
         "startUrls": [{"url": SEARCH_URL}],
@@ -56,24 +60,46 @@ def run_apify_actor():
     print(f"Calling Apify actor {APIFY_ACTOR_ID}...")
     print(f"  maxItems={MAX_ITEMS}, monitoringMode={MONITORING_MODE}")
 
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    max_attempts = 2
+    last_err_msg = None
+    for attempt in range(1, max_attempts + 1):
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=1000) as resp:
+                items = json.loads(resp.read())
+                print(f"  Received {len(items)} items from actor")
+                return items
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:300]
+            last_err_msg = f"HTTP {e.code}: {body}"
+        except urllib.error.URLError as e:
+            last_err_msg = f"URLError: {e.reason}"
+        except (ConnectionError, OSError) as e:
+            last_err_msg = f"{type(e).__name__}: {e}"
+
+        print(f"  Attempt {attempt}/{max_attempts} failed: {last_err_msg}", file=sys.stderr)
+        if attempt < max_attempts:
+            print(f"  Retrying in 60s...", file=sys.stderr)
+            time.sleep(60)
+
+    # All attempts failed — surface the error to Telegram before exiting
+    alert = (
+        f"⚠️ <b>Idealista monitor — Apify call failed</b>\n\n"
+        f"After {max_attempts} attempts, the actor call did not complete.\n"
+        f"Last error: <code>{_escape_html(last_err_msg or 'unknown')[:500]}</code>\n\n"
+        f"Next retry: {NEXT_RUN_DESCRIPTION}."
     )
     try:
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            items = json.loads(resp.read())
-            print(f"  Received {len(items)} items from actor")
-            return items
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")[:500]
-        print(f"ERROR: Apify HTTP {e.code}: {body}", file=sys.stderr)
-        sys.exit(1)
-    except urllib.error.URLError as e:
-        print(f"ERROR: Apify connection failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        send_telegram_text(alert)
+    except Exception:
+        pass  # Don't let the alert itself crash the exit path
+    print(f"ERROR: Apify actor call failed after {max_attempts} attempts", file=sys.stderr)
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
