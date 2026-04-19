@@ -37,6 +37,8 @@
     "111211037",
     "111212164",
     "111223948",
+    "111232306",
+    "111232924",
     "1897814",
     "37284533",
     "39225247",
@@ -44,9 +46,9 @@
     "93525140",
     "93527155"
   ],
-  "count": 43,
-  "updated_at": "2026-04-18T10:25:50Z",
-  "last_daily_status_date": "2026-04-18",
-  "new_count_today": 1,
-  "new_count_yesterday": 4
+  "count": 45,
+  "updated_at": "2026-04-19T10:24:27Z",
+  "last_daily_status_date": "2026-04-19",
+  "new_count_today": 2,
+  "new_count_yesterday": 1
 }
