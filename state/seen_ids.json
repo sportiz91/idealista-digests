@@ -190,7 +190,9 @@
     "111539588",
     "111541314",
     "111543548",
+    "111544257",
     "111549316",
+    "111553759",
     "1897814",
     "25138623",
     "25816902",
@@ -219,9 +221,9 @@
     "98573504",
     "98641367"
   ],
-  "count": 218,
-  "updated_at": "2026-05-23T10:43:05Z",
-  "last_daily_status_date": "2026-05-23",
-  "new_count_today": 6,
-  "new_count_yesterday": 5
+  "count": 220,
+  "updated_at": "2026-05-24T10:44:48Z",
+  "last_daily_status_date": "2026-05-24",
+  "new_count_today": 2,
+  "new_count_yesterday": 6
 }
